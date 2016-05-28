@@ -1,4 +1,5 @@
 var Q = require('q'),
+    _get = require('lodash/object/get'),
     path = require('path'),
     fs = require('q-io/fs'),
     EventEmitter = require('events').EventEmitter,
@@ -17,12 +18,7 @@ var Q = require('q'),
     tarifaFile = require('../../lib/tarifa-file'),
     settings = require('../../lib/settings'),
     askHostIp = require('./helper/askip'),
-    watchFile = require('./helper/watchFile'),
-    startLiveReloadServer = require('./helper/reloadServer'),
-    startHttpServer = require('./helper/httpServer'),
-    prepare = require('./helper/prepare'),
-    triggerLR = require('./helper/triggerLiveReload'),
-    findPorts = require('./helper/findPorts');
+    watchFile = require('./helper/watchFile');
 
 function sigint(ƒ) {
     var d = Q.defer();
@@ -46,31 +42,26 @@ function sigint(ƒ) {
 
 function setup(localSettings, httpPort) {
     return builder.checkWatcher(pathHelper.root()).then(function () {
-        return askHostIp().then(function (ip) {
-            return Q.all([
-                Q(ip),
-                findPorts(ip, settings.livereload_port, settings.livereload_range, 1),
-                findPorts(ip, httpPort, 1, 1)
-            ]);
-        });
+        return Q.all([
+            askHostIp()
+        ]);
     });
 }
 
 function start (platform, localSettings, config, opts) {
-    return function (ip, lrPorts, httpPorts) {
-        var p = (!opts.nolivereload ? startLiveReloadServer(lrPorts[0]) : Q());
-        return p.then(function () {
-            return startHttpServer(
-                !opts.nolivereload ? lrPorts[0] : null,
-                httpPorts[0],
-                platform
-            );
-        }).then(function () {
+    return function (ip, httpPorts) {
+        var configuration = localSettings.configurations[platform][config];
+        var content = _get(configuration, 'cordova.content') ||
+          _get(localSettings, 'cordova.content') || 'index.html';
+
+        var watcher = content.match(/^http/) ? content : format('http://%s:%s', ip, opts.httpPort);
+
+        return Q().then(function () {
             var msg = {
                 localSettings: localSettings,
                 platform: platform,
                 configuration: config,
-                watch: format('http://%s:%s/www/index.html', ip, httpPorts[0])
+                watch: watcher
             };
 
             if(platform === 'browser' && !opts.norun) return buildAction.buildƒ(msg);
@@ -82,9 +73,7 @@ function start (platform, localSettings, config, opts) {
                 platform,
                 config,
                 ip,
-                lrPorts[0],
-                httpPorts[0],
-                opts.nolivereload
+                opts.httpPort
             ];
         });
     };
@@ -112,19 +101,15 @@ function logTime(t0) {
     };
 }
 
-function trigger(localSettings, platform, config, ip, httpPort, lrPort, nolr) {
-    return function (filePath) {
-        log.send('success', 'www project triggering tarifa');
+function trigger(localSettings, platform, config, ip, httpPort) {
+    return function () {
+        log.send('sucess', 'www project triggering tarifa');
         var t0 = (new Date()).getTime(),
             www = pathHelper.cordova_www(),
             out = localSettings.project_output;
 
-        return prepare(www, out, localSettings, platform, config).then(function () {
-            if(!nolr)
-                return triggerLR(ip, httpPort, lrPort, out, filePath).then(logTime(t0));
-            else return Q();
-        });
-    };
+        return prepare(www, out, localSettings, platform, config);
+    }
 }
 
 function onChange(root, platform, config, currentConf, confEmitter) {
@@ -139,7 +124,7 @@ function onChange(root, platform, config, currentConf, confEmitter) {
     };
 }
 
-function wait(localSettings, platform, config, ip, lrPort, httpPort, nolr) {
+function wait(localSettings, platform, config, ip, httpPort) {
     var root = pathHelper.root(),
         tarifaFilePath = path.join(root, settings.publicTarifaFileName),
         tarifaPrivatePath = path.join(root, settings.privateTarifaFileName);
@@ -154,7 +139,7 @@ function wait(localSettings, platform, config, ip, lrPort, httpPort, nolr) {
         var confEmitter = new EventEmitter(),
             closeBuilderWatch = builder.watch(
                 pathHelper.root(),
-                trigger(localSettings, platform, config, ip, httpPort, lrPort, nolr),
+                trigger(localSettings, platform, config, ip, httpPort),
                 localSettings,
                 platform,
                 config,
@@ -196,11 +181,10 @@ function watch(platform, config, opts) {
 var action = function (argv) {
     var helpOpt = argsHelper.matchSingleOption(argv, 'h', 'help'),
         norun = argsHelper.matchOptionWithValue(argv, 'norun'),
-        nolivereload = argsHelper.matchOptionWithValue(argv, 'nolivereload'),
         httpPort = settings.default_http_port;
 
     if (!helpOpt && argsHelper.matchArgumentsCount(argv, [1, 2]) &&
-            argsHelper.checkValidOptions(argv, ['p', 'port', 'norun', 'nolivereload'])) {
+            argsHelper.checkValidOptions(argv, ['p', 'port', 'norun'])) {
 
         if (argsHelper.matchOptionWithValue(argv, 'p', 'port')) {
             httpPort = parseInt(argv.p || argv.port, 10);
@@ -211,7 +195,6 @@ var action = function (argv) {
         }
 
         return watch(argv._[0], argv._[1] || 'default', {
-            nolivereload: nolivereload,
             norun: norun,
             httpPort: httpPort
         });
